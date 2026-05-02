@@ -2,6 +2,13 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 import uuid
 
+VALID_TRANSITIONS = {
+    "REQUESTED": ["ACCEPTED","CANCELLED"],
+    "ACCEPTED":["COMPLETED","CANCELLED"],
+    "COMPLETED":[],
+    "CANCELLED":[]
+}
+
 app = FastAPI()
 
 # In memory storage (temporary)
@@ -46,6 +53,14 @@ def update_ride(ride_id:str, status:str):
 
     if not ride:
         return {"error":"Ride not found"}
+    
+    current_status = ride["status"]
+
+    # validate transition
+    if status not in VALID_TRANSITIONS[current_status]:
+        return {
+            "error" : f"Invalid transition from {current_status} to {status}"
+        }
 
     ride["status"] = status
 
