@@ -30,3 +30,13 @@ def create_ride(request: RideRequest):
     rides[ride_id] = ride
 
     return ride
+
+@app.get("/rides/{ride_id}")
+def get_ride(ride_id:str):
+    ride = rides.get(ride_id)
+
+    if not ride:
+        return {"error":"Ride not found"}
+    
+    return ride
+
