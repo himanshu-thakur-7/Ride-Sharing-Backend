@@ -36,7 +36,8 @@ def create_ride(request: RideRequest):
         "Id" : ride_id,
         "pickup": request.pickup,
         "destination": request.destination,
-        "status":"REQUESTED"
+        "status":"REQUESTED",
+        "driver_id":None
     }
 
     rides[ride_id] = ride
@@ -88,3 +89,29 @@ def create_driver(driver: Driver):
     drivers[driver_id] = new_driver
 
     return new_driver
+
+# endpoint to assign ride to driver
+@app.post("/rides/{ride_id}/assign/{driver_id}")
+def assign_driver(ride_id:str, driver_id:str):
+    ride = rides.get(ride_id)
+    driver = drivers.get(driver_id)
+
+    if not ride:
+        return {"error":"Ride not found"}
+    
+    if not driver:
+        return {"error":"Driver not found"}
+    
+    if driver["status"] != "AVAILABLE":
+        return {"error":"Driver not available"}
+    
+    # Assign driver
+    ride["driver_id"] = driver_id
+    ride["status"] = "ACCEPTED"
+
+    driver["status"] = "BUSY"
+
+    return {
+        "ride":ride,
+        "driver":driver
+    }
