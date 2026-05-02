@@ -22,6 +22,10 @@ class RideRequest(BaseModel):
 class Driver(BaseModel):
     name:str
 
+class LocationUpdate(BaseModel):
+    lat:float
+    long:float
+
 # health endpoint
 @app.get("/")
 def home():
@@ -83,7 +87,8 @@ def create_driver(driver: Driver):
     new_driver = {
         "id" : driver_id,
         "name": driver.name,
-        "status":"AVAILABLE"
+        "status":"AVAILABLE",
+        "location": None
     }
 
     drivers[driver_id] = new_driver
@@ -115,3 +120,18 @@ def assign_driver(ride_id:str, driver_id:str):
         "ride":ride,
         "driver":driver
     }
+
+# endpoint to update driver location
+@app.patch("/drivers/{driver_id}/location")
+def update_location(driver_id:str, location: LocationUpdate):
+    driver = drivers.get(driver_id)
+
+    if not driver:
+        return {"error":"Driver not found"}
+    
+    driver["location"] = {
+        "lat":location.lat,
+        "long":location.long
+    }
+
+    return driver
