@@ -11,7 +11,8 @@ redis_client = redis.Redis(
 )
 
 VALID_TRANSITIONS = {
-    "REQUESTED": ["ACCEPTED","CANCELLED"],
+    "REQUESTED": ["MATCHING","CANCELLED"],
+    "MATCHING":["ACCEPTED","CANCELLED"],
     "ACCEPTED":["COMPLETED","CANCELLED"],
     "COMPLETED":[],
     "CANCELLED":[]
@@ -70,7 +71,7 @@ def find_nearest_driver_v0(pickup):
 
 
 # find nearest driver via redis geo search 
-def find_nearest_driver(pickup):
+def find_nearest_driver(pickup,tried_drivers):
     longitude = pickup["long"]
     latitude = pickup["lat"]
 
@@ -84,6 +85,8 @@ def find_nearest_driver(pickup):
     )
 
     for driver_id in nearby_drivers:
+        if driver_id in tried_drivers:
+            continue
         driver = drivers.get(driver_id)
         if not driver:
             continue
@@ -123,17 +126,19 @@ def create_ride(request: RideRequest):
         "pickup": request.pickup.dict(),
         "destination": request.destination.dict(),
         "status":"REQUESTED",
-        "driver_id":None
+        "driver_id":None,
+        "tried_drivers":[]
     }
 
     rides[ride_id] = ride
 
-    nearest_driver = find_nearest_driver(ride["pickup"])
+    nearest_driver = find_nearest_driver(ride["pickup"],ride["tried_drivers"])
 
     if nearest_driver:
         ride["driver_id"] = nearest_driver["id"]
-        ride["status"] = "ACCEPTED"
-        nearest_driver["status"] = "BUSY"
+        ride["status"] = "MATCHING"
+        # nearest_driver["status"] = "BUSY"
+        ride["tried_drivers"].append(nearest_driver["id"])
 
     return ride
 
@@ -239,3 +244,42 @@ def update_location(driver_id:str, location: Location):
 def redis_test():
     redis_client.set("test","working")
     return {"value":redis_client.get("test")}
+
+# endpoint to register acceptance or rejection of ride request from driver
+@app.post("/drivers/{driver_id}/respond")
+def driver_response(driver_id:str,ride_id:str,accept:bool):
+    driver = drivers.get(driver_id)
+    ride = rides.get(ride_id)
+
+    if not driver or not ride:
+        return {"error":"Driver or Ride not found"}
+    
+    if ride["driver_id"] != driver_id:
+        return {"error":"Driver not assigned to this ride"}
+    
+    if ride["status"] != "MATCHING":
+        return {"error":"Ride not in matching state"}
+    
+    if accept:
+        ride["status"] = "ACCEPTED"
+        driver["status"] = "BUSY"
+        return {"message":"Ride accepted","ride":ride}
+    
+    else:
+        # reject the ride
+        driver["status"] = "AVAILABLE"
+        
+        # try next driver
+        next_driver = find_nearest_driver(
+            ride["pickup"],ride["tried_drivers"]
+        )
+
+        if next_driver:
+            ride["driver_id"] = next_driver["id"]
+            ride["tried_drivers"].append(next_driver["id"])
+            ride["status"] = "MATCHING"
+            return {"message":"Trying next driver","ride":ride}
+        
+        else:
+            ride["status"] = "CANCELLED"
+            return {"message":"No drivers available","ride":ride}
