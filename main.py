@@ -2,6 +2,13 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 import uuid
 import math
+import redis
+
+redis_client = redis.Redis(
+    host="localhost",
+    port=6379,
+    decode_responses=True
+)
 
 VALID_TRANSITIONS = {
     "REQUESTED": ["ACCEPTED","CANCELLED"],
@@ -16,6 +23,20 @@ app = FastAPI()
 rides = {}
 drivers = {}
 
+# Models
+
+class RideRequest(BaseModel):
+    pickup:Location
+    destination:Location
+
+class Driver(BaseModel):
+    name:str
+
+class Location(BaseModel):
+    lat:float
+    long:float
+
+
 # helper methods
 
 # calculate distance between location1 and location2
@@ -25,8 +46,8 @@ def calculate_distance(loc1, loc2):
         (loc1["long"] - loc2["long"])**2 
     )
 
-# find nearest driver
-def find_nearest_driver(pickup):
+# find nearest driver with distance formula and scanning : v0
+def find_nearest_driver_v0(pickup):
     nearest_driver = None
     min_distance = float("inf")
 
@@ -48,16 +69,31 @@ def find_nearest_driver(pickup):
     return nearest_driver
 
 
-class RideRequest(BaseModel):
-    pickup:Location
-    destination:Location
+# find nearest driver via redis geo search 
+def find_nearest_driver(pickup):
+    longitude = pickup["long"]
+    latitude = pickup["lat"]
 
-class Driver(BaseModel):
-    name:str
+    # search within 5 km radius (distance can be configured later), returns dirver ids sorted by distance
+    nearby_drivers = redis_client.geosearch(
+        "drivers:locations",
+        longitude=longitude,
+        latitude=latitude,
+        radius=5,
+        unit="km"
+    )
 
-class Location(BaseModel):
-    lat:float
-    long:float
+    for driver_id in nearby_drivers:
+        driver = drivers.get(driver_id)
+        if not driver:
+            continue
+        
+        if driver["status"] != "AVAILABLE":
+            continue
+
+        return driver
+    
+    return None
 
 # health endpoint
 @app.get("/")
@@ -172,9 +208,21 @@ def update_location(driver_id:str, location: Location):
     if not driver:
         return {"error":"Driver not found"}
     
-    driver["location"] = {
-        "lat":location.lat,
-        "long":location.long
-    }
+    # Naive Solution: save in python dictionary
+    # driver["location"] = {
+    #     "lat":location.lat,
+    #     "long":location.long
+    # }
 
+    # Store in redis GEO
+    redis_client.geoadd(
+        "drivers:locations",
+        (location.long, location.lat, driver_id)
+    )
     return driver
+
+
+@app.get("/redis-test")
+def redis_test():
+    redis_client.set("test","working")
+    return {"value":redis_client.get("test")}
