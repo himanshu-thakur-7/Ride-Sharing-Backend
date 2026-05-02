@@ -91,9 +91,22 @@ def find_nearest_driver(pickup):
         if driver["status"] != "AVAILABLE":
             continue
 
+        # Try acquiring lock
+        if not acquire_driver_lock(driver_id):
+            continue
+
         return driver
     
     return None
+
+
+def acquire_driver_lock(driver_id):
+    return redis_client.set(
+        f"lock:driver:{driver_id}",
+        "locked",
+        nx=True,    # only create if does not exist
+        ex=10       # expire in 10 seconds
+    )
 
 # health endpoint
 @app.get("/")
