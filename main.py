@@ -40,3 +40,13 @@ def get_ride(ride_id:str):
     
     return ride
 
+@app.patch("/rides/{ride_id}")
+def update_ride(ride_id:str, status:str):
+    ride = rides.get(ride_id)
+
+    if not ride:
+        return {"error":"Ride not found"}
+
+    ride["status"] = status
+
+    return ride
