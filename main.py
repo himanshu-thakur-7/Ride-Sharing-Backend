@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 import uuid
+import math
 
 VALID_TRANSITIONS = {
     "REQUESTED": ["ACCEPTED","CANCELLED"],
@@ -15,14 +16,46 @@ app = FastAPI()
 rides = {}
 drivers = {}
 
+# helper methods
+
+# calculate distance between location1 and location2
+def calculate_distance(loc1, loc2):
+    return math.sqrt(
+        (loc1["lat"] - loc2["lat"])**2 +
+        (loc1["long"] - loc2["long"])**2 
+    )
+
+# find nearest driver
+def find_nearest_driver(pickup):
+    nearest_driver = None
+    min_distance = float("inf")
+
+    for driver in drivers.values():
+        # if driver is not available continue search
+        if driver["status"] != "AVAILABLE":
+            continue
+
+        # if driver does not have location continue
+        if not driver["location"]:
+            continue
+
+        dist = calculate_distance(pickup,driver.get("location"))
+
+        if dist < min_distance:
+            min_distance = dist
+            nearest_driver = driver
+    
+    return nearest_driver
+
+
 class RideRequest(BaseModel):
-    pickup:str
-    destination:str
+    pickup:Location
+    destination:Location
 
 class Driver(BaseModel):
     name:str
 
-class LocationUpdate(BaseModel):
+class Location(BaseModel):
     lat:float
     long:float
 
@@ -38,13 +71,20 @@ def create_ride(request: RideRequest):
 
     ride = {
         "Id" : ride_id,
-        "pickup": request.pickup,
-        "destination": request.destination,
+        "pickup": request.pickup.dict(),
+        "destination": request.destination.dict(),
         "status":"REQUESTED",
         "driver_id":None
     }
 
     rides[ride_id] = ride
+
+    nearest_driver = find_nearest_driver(ride["pickup"])
+
+    if nearest_driver:
+        ride["driver_id"] = nearest_driver["id"]
+        ride["status"] = "ACCEPTED"
+        nearest_driver["status"] = "BUSY"
 
     return ride
 
@@ -78,6 +118,9 @@ def update_ride(ride_id:str, status:str):
 
     return ride
 
+@app.get("/drivers")
+def get_all_drivers():
+    return drivers
 
 # api to create driver
 @app.post("/drivers")
@@ -123,7 +166,7 @@ def assign_driver(ride_id:str, driver_id:str):
 
 # endpoint to update driver location
 @app.patch("/drivers/{driver_id}/location")
-def update_location(driver_id:str, location: LocationUpdate):
+def update_location(driver_id:str, location: Location):
     driver = drivers.get(driver_id)
 
     if not driver:
