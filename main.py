@@ -13,16 +13,21 @@ app = FastAPI()
 
 # In memory storage (temporary)
 rides = {}
+drivers = {}
 
 class RideRequest(BaseModel):
     pickup:str
     destination:str
 
+class Driver(BaseModel):
+    name:str
 
+# health endpoint
 @app.get("/")
 def home():
     return {"message":"Uber backend starting...."}
 
+# api to create a new ride
 @app.post("/rides")
 def create_ride(request: RideRequest):
     ride_id = str(uuid.uuid4())
@@ -38,6 +43,7 @@ def create_ride(request: RideRequest):
 
     return ride
 
+# api to get information about a ride
 @app.get("/rides/{ride_id}")
 def get_ride(ride_id:str):
     ride = rides.get(ride_id)
@@ -47,6 +53,7 @@ def get_ride(ride_id:str):
     
     return ride
 
+# api to update ride status
 @app.patch("/rides/{ride_id}")
 def update_ride(ride_id:str, status:str):
     ride = rides.get(ride_id)
@@ -65,3 +72,19 @@ def update_ride(ride_id:str, status:str):
     ride["status"] = status
 
     return ride
+
+
+# api to create driver
+@app.post("/drivers")
+def create_driver(driver: Driver):
+    driver_id = str(uuid.uuid4())
+
+    new_driver = {
+        "id" : driver_id,
+        "name": driver.name,
+        "status":"AVAILABLE"
+    }
+
+    drivers[driver_id] = new_driver
+
+    return new_driver
