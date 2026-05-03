@@ -66,6 +66,10 @@ export default defineConfig({
     fs: {
       strict: true,
     },
+    proxy: {
+      "/rides": "http://localhost:8000",
+      "/drivers": "http://localhost:8000",
+    },
   },
   preview: {
     port,
