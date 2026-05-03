@@ -2,10 +2,9 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 import uuid
 import redis
-import threading
-import time
 import boto3
 from decimal import Decimal
+import json
 
 app = FastAPI()
 
@@ -20,6 +19,17 @@ dynamodb = boto3.resource(
 )
 
 rides_table = dynamodb.Table("rides")
+
+# --------------- SQS ----------------------------
+sqs = boto3.client(
+    "sqs",
+    region_name="us-east-1",
+    endpoint_url="http://localhost:4566",
+    aws_access_key_id="test",
+    aws_secret_access_key="test"
+)
+
+QUEUE_URL = "http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/ride-matching-queue"
 
 # ---------------- DynamoDB Helpers ----------------
 
@@ -47,6 +57,14 @@ def update_ride_db(ride_id, updates):
 
     return convert_decimal(res.get("Attributes"))
 
+
+# ---------------- SQS Helpers ---------------------------
+def sendMessage(message,delay=0):
+    sqs.send_message(
+        QueueUrl = QUEUE_URL,
+        MessageBody = json.dumps(message),
+        DelaySeconds=delay
+    )
 # ---------------- Redis ----------------
 
 redis_client = redis.Redis(host="localhost", port=6379, decode_responses=True)
@@ -57,7 +75,7 @@ GEO_RADIUS_KM = 5
 
 # ---------------- Drivers (temporary in-memory) ----------------
 
-drivers = {}
+# drivers = {}
 
 
 # ------------------ STATE MACHINE ------------------
@@ -121,7 +139,8 @@ def find_nearest_driver(pickup, tried_drivers):
         if driver_id in tried_drivers:
             continue
 
-        driver = drivers.get(driver_id)
+        driver = redis_client.hgetall(f"driver:{driver_id}")
+
         if not driver or driver["status"] != "AVAILABLE":
             continue
 
@@ -154,7 +173,8 @@ def assign_next_driver(ride):
     if driver["id"] not in ride["tried_drivers"]:
         ride["tried_drivers"].append(driver["id"])
 
-    driver["status"] = "BUSY"
+    # driver["status"] = "BUSY"
+    redis_client.hset(f"driver:{driver['id']}","status","BUSY")
 
     update_ride_db(ride_id, {
         "status": "OFFER_SENT",
@@ -163,18 +183,22 @@ def assign_next_driver(ride):
         "tried_drivers": ride["tried_drivers"]
     })
 
-    threading.Thread(
-        target=handle_driver_timeout,
-        args=(ride_id, driver["id"], lock_value)
-    ).start()
+    sendMessage({
+        "type": "CHECK_TIMEOUT",
+        "ride_id": ride_id,
+        "driver_id": driver["id"],
+        "lock_value": lock_value
+    }, delay=DRIVER_RESPONSE_TIMEOUT)
+
 
 # ---------------- Timeout ----------------
 
 def handle_driver_timeout(ride_id, driver_id, lock_value):
-    time.sleep(DRIVER_RESPONSE_TIMEOUT)
-
     ride = get_ride_db(ride_id)
-    driver = drivers.get(driver_id)
+    # driver = drivers.get(driver_id)
+    driver = redis_client.hgetall(f"driver:{driver_id}")
+    if not driver:
+        return {"error": "Driver not found"}
 
     if not ride or not driver:
         return
@@ -190,7 +214,7 @@ def handle_driver_timeout(ride_id, driver_id, lock_value):
 
     # release lock + free driver
     release_lock(driver_id, lock_value)
-    driver["status"] = "AVAILABLE"
+    redis_client.hset(f"driver:{driver['id']}","status","AVAILABLE")
 
     # clear assignment in DB
     update_ride_db(ride_id, {
@@ -198,7 +222,11 @@ def handle_driver_timeout(ride_id, driver_id, lock_value):
         "lock_value": None
     })
 
-    assign_next_driver(ride)
+    # assign_next_driver(ride)
+    sendMessage({
+        "type":"MATCH_RIDE",
+        "ride_id":ride_id
+    })
 
 # ---------------- Conversion ----------------
 
@@ -224,7 +252,7 @@ def convert_decimal(obj):
 
 @app.post("/test/reset")
 def reset():
-    drivers.clear()
+    # drivers.clear()
     redis_client.flushall()
     return {"message": "reset complete"}
 
@@ -243,7 +271,10 @@ def create_ride(request: RideRequest):
     }
 
     save_ride(ride)
-    assign_next_driver(ride)
+    sendMessage({
+        "type":"MATCH_RIDE",
+        "ride_id":ride_id
+    })
 
     return get_ride_db(ride_id)
 
@@ -268,17 +299,19 @@ def update_ride(ride_id: str, status: str):
 def create_driver(driver: Driver):
     driver_id = str(uuid.uuid4())
 
-    drivers[driver_id] = {
+    driver_data = {
         "id": driver_id,
         "name": driver.name,
         "status": "AVAILABLE"
     }
+    redis_client.hset(f"driver:{driver_id}",mapping=driver_data)
 
-    return drivers[driver_id]
+    return driver_data
 
 @app.patch("/drivers/{driver_id}/location")
 def update_location(driver_id: str, location: Location):
-    if driver_id not in drivers:
+    driver = redis_client.hgetall(f"driver:{driver_id}")
+    if not driver:
         return {"error": "Driver not found"}
 
     redis_client.geoadd(
@@ -290,7 +323,10 @@ def update_location(driver_id: str, location: Location):
 
 @app.post("/drivers/{driver_id}/respond")
 def driver_response(driver_id: str, ride_id: str, accept: bool):
-    driver = drivers.get(driver_id)
+    # driver = drivers.get(driver_id)
+    driver = redis_client.hgetall(f"driver:{driver_id}")
+    if not driver:
+        return {"error": "Driver not found"}
     ride = get_ride_db(ride_id)
 
     if not driver or not ride:
@@ -308,17 +344,20 @@ def driver_response(driver_id: str, ride_id: str, accept: bool):
     release_lock(driver_id, lock_value)
 
     if accept:
-        driver["status"] = "BUSY"
+        redis_client.hset(f"driver:{driver['id']}","status","BUSY")
         updated = update_ride_db(ride_id, {"status": "ACCEPTED"})
         return {"message": "Accepted", "ride": updated}
 
-    driver["status"] = "AVAILABLE"
+    redis_client.hset(f"driver:{driver['id']}","status","AVAILABLE")
 
     update_ride_db(ride_id, {
         "driver_id": None,
         "lock_value": None
     })
 
-    assign_next_driver(ride)
+    sendMessage({
+        "type": "MATCH_RIDE",
+        "ride_id": ride_id
+    })
 
     return {"message": "Retrying"}
