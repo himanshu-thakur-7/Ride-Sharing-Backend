@@ -4,8 +4,47 @@ import uuid
 import redis
 import threading
 import time
-
+import boto3
+from decimal import Decimal
 app = FastAPI()
+
+# dynamoDB
+dynamodb = boto3.resource(
+    "dynamodb",
+    region_name="us-east-1",
+    endpoint_url="http://localhost:4566",
+    aws_access_key_id="test",
+    aws_secret_access_key="test"
+)
+
+rides_table = dynamodb.Table("rides")
+
+# ---------------- DynamoDB helper methods------------
+
+# Save Ride
+def save_ride(ride):
+    ride = convert_float(ride)
+    rides_table.put_item(Item=ride)
+
+# Get Ride 
+def get_ride_db(ride_id):
+    res = rides_table.get_item(Key={"id":ride_id})
+    return res.get("Item")
+
+# Update Ride
+def update_ride_db(ride_id,updates):
+    update_expr = "SET " + ",".join([f"#{k}=:{k}" for k in updates])
+    expr_val = {f":{k}":v for k ,v in updates.items()}
+    expr_attr_names= {f"#{k}": k for k in updates}
+    res = rides_table.update_item(
+        Key={"id":ride_id},
+        UpdateExpression=update_expr,
+        ExpressionAttributeValues=expr_val,
+        ExpressionAttributeNames=expr_attr_names,
+        ReturnValues="ALL_NEW"
+    )
+
+    return res.get("Attributes")
 
 # Redis
 redis_client = redis.Redis(host="localhost", port=6379, decode_responses=True)
@@ -101,6 +140,10 @@ def assign_next_driver(ride):
 
     if not driver:
         ride["status"] = "CANCELLED"
+        update_ride_db(ride["id"],{
+            "status":ride["status"],
+            "driver_id":None
+        })
         return
 
     ride["driver_id"] = driver["id"]
@@ -110,6 +153,12 @@ def assign_next_driver(ride):
     driver["status"] = "BUSY"
     ride["tried_drivers"].append(driver["id"])
 
+    update_ride_db(ride["id"], {
+        "status":ride["status"],
+        "driver_id":ride["driver_id"],
+        "lock_value":ride["lock_value"],
+        "tried_drivers":ride["tried_drivers"]
+    })
     # Start timeout
     threading.Thread(
         target=handle_driver_timeout,
@@ -144,6 +193,27 @@ def handle_driver_timeout(ride_id, driver_id, lock_value):
 
     assign_next_driver(ride)
 
+# ------------------ Float to Decimal conversion and vice versa ----------
+def convert_float(obj):
+    if isinstance(obj,float):
+        return Decimal(str(obj))
+    if isinstance(obj,dict):
+        return {k:convert_float(v) for k,v in obj.items()}
+    if isinstance(obj,list):
+        return [convert_float(v) for v in obj]
+    
+    return obj
+
+def convert_decimal(obj):
+    if isinstance(obj,Decimal):
+        return float(str(obj))
+    if isinstance(obj,dict):
+        return {k:convert_decimal(v) for k,v in obj.items()}
+    if isinstance(obj,list):
+        return [convert_decimal(v) for v in obj]
+    
+    return obj
+
 # ------------------ ENDPOINTS ------------------
 
 @app.get("/")
@@ -165,26 +235,34 @@ def create_ride(request: RideRequest):
     }
 
     rides[ride_id] = ride
-
+    save_ride(ride)
     assign_next_driver(ride)
 
     return ride
 
 @app.get("/rides/{ride_id}")
 def get_ride(ride_id: str):
-    return rides.get(ride_id, {"error": "Ride not found"})
+    ride = get_ride_db(ride_id)
+    return ride if ride else {"error": "Ride not found"}
 
 @app.patch("/rides/{ride_id}")
 def update_ride(ride_id: str, status: str):
-    ride = rides.get(ride_id)
+    ride = get_ride_db(ride_id)
+
     if not ride:
         return {"error": "Ride not found"}
+    
+    current_status = ride["status"]
 
     if status not in VALID_TRANSITIONS[ride["status"]]:
-        return {"error": "Invalid transition"}
+        return {"error": f"Invalid transition from {current_status} to {status}"}
 
-    ride["status"] = status
-    return ride
+    # updates in DB
+    update_ride_db(ride_id,{"status":status})
+    
+    # fetch latest 
+    updated_ride = get_ride_db(ride_id)
+    return updated_ride
 
 @app.post("/drivers")
 def create_driver(driver: Driver):
