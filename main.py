@@ -3,6 +3,8 @@ from pydantic import BaseModel
 import uuid
 import math
 import redis
+import threading
+import time
 
 redis_client = redis.Redis(
     host="localhost",
@@ -17,6 +19,8 @@ VALID_TRANSITIONS = {
     "COMPLETED":[],
     "CANCELLED":[]
 }
+LOCK_TTL = 15
+DRIVER_RESPONSE_TIMEOUT = 10
 
 app = FastAPI()
 
@@ -108,9 +112,53 @@ def acquire_driver_lock(driver_id):
         f"lock:driver:{driver_id}",
         "locked",
         nx=True,    # only create if does not exist
-        ex=10       # expire in 10 seconds
+        ex=LOCK_TTL       # expire in 10 seconds
     )
 
+def handle_driver_timeout(ride_id,driver_id):
+    time.sleep(DRIVER_RESPONSE_TIMEOUT) # wait for driver response
+
+    ride = rides.get(ride_id)
+    driver = drivers.get(driver_id)
+
+    if not ride or not driver:
+        return
+    
+    # If ride accepted => do nothing
+    if ride["status"] != "MATCHING":
+        return
+    
+    # If driver already changed
+    if ride["driver_id"] != driver_id:
+        return 
+    
+    print(f"Driver {driver_id} timed out")
+
+    #free driver
+    driver["status"] = "AVAILABLE"
+
+    #try next driver
+    next_driver = find_nearest_driver(
+        ride["pickup"],
+        ride["tried_drivers"]
+    )
+
+    if next_driver:
+        ride["driver_id"] = next_driver["id"]
+        ride["tried_drivers"].append(next_driver["id"])
+        ride["status"]="MATCHING"
+
+        # start new timeout thread
+        threading.Thread(
+            target=handle_driver_timeout,
+            args=(ride_id,next_driver["id"])
+        ).start()
+
+    else:
+        ride["status"] = "CANCELLED"
+
+
+# endpoints
 # health endpoint
 @app.get("/")
 def home():
@@ -140,6 +188,10 @@ def create_ride(request: RideRequest):
         # nearest_driver["status"] = "BUSY"
         ride["tried_drivers"].append(nearest_driver["id"])
 
+    threading.Thread(
+        target=handle_driver_timeout,
+        args=(ride_id,nearest_driver["id"])
+    ).start()
     return ride
 
 # api to get information about a ride
@@ -278,6 +330,10 @@ def driver_response(driver_id:str,ride_id:str,accept:bool):
             ride["driver_id"] = next_driver["id"]
             ride["tried_drivers"].append(next_driver["id"])
             ride["status"] = "MATCHING"
+            threading.Thread(
+                target=handle_driver_timeout,
+                args=(ride_id,next_driver["id"])
+            ).start()
             return {"message":"Trying next driver","ride":ride}
         
         else:
