@@ -1,0 +1,84 @@
+Build a simple, clean frontend UI using React (no TypeScript) for an Uber-like demo system.
+
+The backend is already implemented using FastAPI and exposes these APIs:
+
+POST /rides
+GET /rides/{ride_id}
+POST /drivers
+PATCH /drivers/{driver_id}/location
+POST /drivers/{driver_id}/respond?ride_id=...&accept=true/false
+
+Do NOT overcomplicate the UI. Focus on clarity and functionality.
+
+Create two separate views:
+
+--------------------------------------------------
+RIDER APP
+--------------------------------------------------
+
+Features:
+1. Input fields:
+   - Pickup latitude
+   - Pickup longitude
+   - Destination latitude
+   - Destination longitude
+
+2. Button: "Request Ride"
+
+3. After creating ride:
+   - Show ride_id
+   - Poll GET /rides/{ride_id} every 2 seconds
+
+4. Display:
+   - Status (REQUESTED, MATCHING, OFFER_SENT, ACCEPTED, CANCELLED)
+   - Assigned driver_id (if any)
+
+Keep UI minimal using basic CSS or Tailwind.
+
+--------------------------------------------------
+DRIVER APP
+--------------------------------------------------
+
+Features:
+
+1. Create driver:
+   - Input: driver name
+   - Button: "Register Driver"
+
+2. After registration:
+   - Store driver_id in state
+
+3. Set location:
+   - Inputs: lat, lng
+   - Button: "Update Location"
+
+4. Poll system for assigned ride:
+   - Call GET /rides/{ride_id} (simulate by entering ride_id manually)
+
+5. If driver_id matches ride.driver_id AND status = OFFER_SENT:
+   Show:
+     - Accept button
+     - Reject button
+
+6. Accept:
+   POST /drivers/{driver_id}/respond?ride_id=...&accept=true
+
+7. Reject:
+   POST /drivers/{driver_id}/respond?ride_id=...&accept=false
+
+--------------------------------------------------
+
+General requirements:
+
+- Keep UI extremely simple and clean
+- No authentication
+- No routing library required (single page is fine)
+- Use React hooks (useState, useEffect)
+- Use fetch API (no axios)
+- Add basic loading states and logs in UI
+- Ensure polling stops when ride reaches terminal state (ACCEPTED or CANCELLED)
+
+--------------------------------------------------
+
+Goal:
+This is a demo UI to showcase backend system design, not a production app.

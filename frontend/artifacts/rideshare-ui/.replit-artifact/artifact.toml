@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Rideshare Demo UI"
+version = "1.0.0"
+id = "artifacts/rideshare-ui"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 25703
+
+[services.development]
+run = "pnpm --filter @workspace/rideshare-ui run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/rideshare-ui", "run", "build" ]
+publicDir = "artifacts/rideshare-ui/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "25703"
+BASE_PATH = "/"
