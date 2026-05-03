@@ -76,8 +76,7 @@ onlyBuiltDependencies:
 
 overrides:
   # replit uses linux-x64 only, we can exclude all other platforms
-  "esbuild>@esbuild/darwin-arm64": "-"
-  "esbuild>@esbuild/darwin-x64": "-"
+  # Note: darwin-arm64 and darwin-x64 are kept so pnpm install works on M1/M2 Macs
   "esbuild>@esbuild/freebsd-arm64": "-"
   "esbuild>@esbuild/freebsd-x64": "-"
   "esbuild>@esbuild/linux-arm": "-"
