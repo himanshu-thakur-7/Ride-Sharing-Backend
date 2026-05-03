@@ -15,7 +15,7 @@ paths = [ "/" ]
 localPort = 25703
 
 [services.development]
-run = "pnpm --filter @workspace/rideshare-ui run dev"
+run = "cd /home/runner/workspace/frontend && pnpm --filter @workspace/rideshare-ui run dev"
 
 [services.production]
 build = [ "pnpm", "--filter", "@workspace/rideshare-ui", "run", "build" ]
