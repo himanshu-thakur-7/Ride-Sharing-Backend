@@ -154,6 +154,12 @@ def find_nearest_driver(pickup, tried_drivers):
 
 def assign_next_driver(ride):
     ride = get_ride_db(ride["id"])
+    if not ride:
+        return
+    
+    if ride["status"] not in ["REQUESTED","MATCHING"]:
+        print("Skipping MATCH_RIDE, ride already in progress",ride["status"])
+        return
     ride_id = ride["id"]
 
     update_ride_db(ride_id, {"status": "MATCHING"})
@@ -195,7 +201,15 @@ def assign_next_driver(ride):
 
 def handle_driver_timeout(ride_id, driver_id, lock_value):
     ride = get_ride_db(ride_id)
-    # driver = drivers.get(driver_id)
+
+    if not ride:
+        return 
+    
+    #1 only act if still waiting
+
+    if ride["status"] != "OFFER_SENT":
+        print("Timeout skipped, ride not in OFFER_SENT")
+
     driver = redis_client.hgetall(f"driver:{driver_id}")
     if not driver:
         return {"error": "Driver not found"}
@@ -207,9 +221,11 @@ def handle_driver_timeout(ride_id, driver_id, lock_value):
         return
 
     if ride["driver_id"] != driver_id:
+        print("Timeout skipped, driver changed")
         return
 
     if not validate_lock(driver_id, lock_value):
+        print("Timeout skipped, lock invalid")
         return
 
     # release lock + free driver
@@ -289,6 +305,7 @@ def update_ride(ride_id: str, status: str):
 
     if not ride:
         return {"error": "Ride not found"}
+    
 
     if status not in VALID_TRANSITIONS[ride["status"]]:
         return {"error": f"Invalid transition"}
