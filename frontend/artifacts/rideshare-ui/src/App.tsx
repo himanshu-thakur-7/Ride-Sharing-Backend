@@ -366,33 +366,116 @@ function RiderApp({ onRideCreated }: RiderAppProps) {
 
 // ─── DRIVER APP ───────────────────────────────────────────────────────────────
 
+const OFFER_WINDOW_SECS = 15;
+
 interface DriverAppProps {
   sharedRideId: string;
 }
 
 function DriverApp({ sharedRideId }: DriverAppProps) {
-  const [name,        setName]        = useState("");
-  const [driverId,    setDriverId]    = useState<string | null>(null);
-  const [location,    setLocation]    = useState<LocationField>(emptyField());
-  const [rideIdInput, setRideIdInput] = useState("");
-  const [ride,        setRide]        = useState<Ride | null>(null);
-  const [loading,     setLoading]     = useState(false);
-  const [locLoading,  setLocLoading]  = useState(false);
-  const [resLoading,  setResLoading]  = useState(false);
-  const [logs,        setLogs]        = useState<string[]>([]);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [name,          setName]          = useState("");
+  const [driverId,      setDriverId]      = useState<string | null>(null);
+  const [location,      setLocation]      = useState<LocationField>(emptyField());
+  const [rideIdInput,   setRideIdInput]   = useState("");
+  const [ride,          setRide]          = useState<Ride | null>(null);
+  const [loading,       setLoading]       = useState(false);
+  const [locLoading,    setLocLoading]    = useState(false);
+  const [resLoading,    setResLoading]    = useState(false);
+  const [logs,          setLogs]          = useState<string[]>([]);
+  // Offer latch: stays true for OFFER_WINDOW_SECS regardless of subsequent polls
+  const [offerLatched,  setOfferLatched]  = useState(false);
+  const [offerCountdown,setOfferCountdown]= useState(0);
 
-  // Auto-fill ride ID when rider creates a ride
+  const pollRef         = useRef<ReturnType<typeof setInterval> | null>(null);
+  const countdownRef    = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Refs so callbacks always see latest values without stale closures
+  const driverIdRef     = useRef<string | null>(null);
+  const offerLatchedRef = useRef(false);
+
+  useEffect(() => { driverIdRef.current = driverId; }, [driverId]);
+
+  const addLog = useCallback((msg: string) =>
+    setLogs(l => [...l, `[${new Date().toLocaleTimeString()}] ${msg}`]), []);
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+  }, []);
+
+  const clearOffer = useCallback(() => {
+    offerLatchedRef.current = false;
+    setOfferLatched(false);
+    setOfferCountdown(0);
+    if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
+  }, []);
+
+  const latchOffer = useCallback(() => {
+    if (offerLatchedRef.current) return; // already latched
+    offerLatchedRef.current = true;
+    setOfferLatched(true);
+    setOfferCountdown(OFFER_WINDOW_SECS);
+    addLog(`🚗 Ride offered to you! You have ${OFFER_WINDOW_SECS}s to respond.`);
+    if (countdownRef.current) clearInterval(countdownRef.current);
+    countdownRef.current = setInterval(() => {
+      setOfferCountdown(c => {
+        if (c <= 1) {
+          clearOffer();
+          addLog("Offer window expired.");
+          return 0;
+        }
+        return c - 1;
+      });
+    }, 1000);
+  }, [addLog, clearOffer]);
+
+  const pollRide = useCallback(async (rideId: string) => {
+    try {
+      const res = await fetch(`${BASE}/rides/${rideId}`);
+      if (!res.ok) { addLog(`Poll error: HTTP ${res.status}`); return; }
+      const data: Ride = await res.json();
+      setRide(data);
+      addLog(`Status: ${data.status}${data.driver_id ? ` | Driver: ${data.driver_id.slice(0, 8)}…` : ""}`);
+      // Latch offer the moment we see OFFER_SENT for this driver
+      if (data.status === "OFFER_SENT" && data.driver_id === driverIdRef.current) {
+        latchOffer();
+      }
+      // Clear latch once ride is terminal
+      if (TERMINAL.includes(data.status)) {
+        stopPolling();
+        clearOffer();
+        addLog("Polling stopped.");
+      }
+    } catch (e) { addLog(`Poll failed: ${(e as Error).message}`); }
+  }, [addLog, stopPolling, latchOffer, clearOffer]);
+
+  const startAutoPolling = useCallback((rideId: string) => {
+    if (!rideId) return;
+    stopPolling();
+    pollRide(rideId);
+    pollRef.current = setInterval(() => pollRide(rideId), 1000);
+  }, [stopPolling, pollRide]);
+
+  // Auto-fill + auto-start polling when rider creates a ride
   useEffect(() => {
-    if (sharedRideId) {
-      setRideIdInput(sharedRideId);
-      addLog(`Ride ID auto-filled from Rider App.`);
+    if (!sharedRideId) return;
+    setRideIdInput(sharedRideId);
+    clearOffer();
+    addLog("Ride ID auto-filled from Rider App.");
+    if (driverIdRef.current) {
+      addLog("Auto-polling started…");
+      startAutoPolling(sharedRideId);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sharedRideId]);
 
-  const addLog = useCallback((msg: string) => setLogs(l => [...l, `[${new Date().toLocaleTimeString()}] ${msg}`]), []);
-  const stopPolling = useCallback(() => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } }, []);
+  // Also auto-start if driver registers after the ride was already created
+  useEffect(() => {
+    if (!driverId || !sharedRideId) return;
+    addLog("Auto-polling started…");
+    startAutoPolling(sharedRideId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [driverId]);
+
+  useEffect(() => () => { stopPolling(); clearOffer(); }, [stopPolling, clearOffer]);
 
   const registerDriver = async () => {
     if (!name.trim()) return;
@@ -427,26 +510,6 @@ function DriverApp({ sharedRideId }: DriverAppProps) {
     finally { setLocLoading(false); }
   };
 
-  const pollRide = useCallback(async (rideId: string) => {
-    try {
-      const res = await fetch(`${BASE}/rides/${rideId}`);
-      if (!res.ok) { addLog(`Poll error: HTTP ${res.status}`); return; }
-      const data: Ride = await res.json();
-      setRide(data);
-      addLog(`Ride status: ${data.status}${data.driver_id ? ` | Driver: ${data.driver_id.slice(0, 8)}…` : ""}`);
-      if (TERMINAL.includes(data.status)) { stopPolling(); addLog("Polling stopped."); }
-    } catch (e) { addLog(`Poll failed: ${(e as Error).message}`); }
-  }, [addLog, stopPolling]);
-
-  const startPolling = () => {
-    const rideId = rideIdInput.trim();
-    if (!rideId) return;
-    addLog(`Polling ride ${rideId.slice(0, 8)}…`);
-    stopPolling();
-    pollRide(rideId);
-    pollRef.current = setInterval(() => pollRide(rideId), 2000);
-  };
-
   const respond = async (accept: boolean) => {
     if (!driverId || !ride) return;
     setResLoading(true);
@@ -454,16 +517,14 @@ function DriverApp({ sharedRideId }: DriverAppProps) {
     try {
       const res = await fetch(`${BASE}/drivers/${driverId}/respond?ride_id=${ride.id}&accept=${accept}`, { method: "POST" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      clearOffer();
       addLog(`Response sent: ${accept ? "ACCEPTED" : "REJECTED"}`);
     } catch (e) { addLog(`Error: ${(e as Error).message}`); }
     finally { setResLoading(false); }
   };
 
-  useEffect(() => () => stopPolling(), [stopPolling]);
-
-  const isOffer = ride && driverId && ride.driver_id === driverId && ride.status === "OFFER_SENT";
   const mapDriver = location.resolved ? { lat: +location.lat, lng: +location.lng, label: location.query.split(",")[0] } : undefined;
-  const mapPickup = ride?.pickup ? { lat: ride.pickup.lat, lng: ride.pickup.lng, label: "Pickup" } : undefined;
+  const mapPickup = ride?.pickup      ? { lat: ride.pickup.lat,      lng: ride.pickup.lng,      label: "Pickup"      } : undefined;
   const mapDest   = ride?.destination ? { lat: ride.destination.lat, lng: ride.destination.lng, label: "Destination" } : undefined;
 
   return (
@@ -506,33 +567,57 @@ function DriverApp({ sharedRideId }: DriverAppProps) {
         </Card>
       )}
 
+      {/* Offer banner — shown for full OFFER_WINDOW_SECS regardless of poll timing */}
+      {offerLatched && (
+        <div className="rounded-xl border-2 border-purple-400 bg-purple-50 shadow-md p-4">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-base font-bold text-purple-900">🚗 Ride offered to you!</p>
+            <span className={`text-sm font-bold px-2 py-0.5 rounded-full border ${
+              offerCountdown <= 5 ? "bg-red-100 text-red-700 border-red-300" : "bg-purple-100 text-purple-700 border-purple-300"
+            }`}>
+              {offerCountdown}s
+            </span>
+          </div>
+          {ride?.pickup && ride?.destination && (
+            <div className="text-xs text-purple-800 mb-3 space-y-0.5">
+              <p>📍 Pickup: {ride.pickup.lat.toFixed(4)}, {ride.pickup.lng.toFixed(4)}</p>
+              <p>🏁 Dest:   {ride.destination.lat.toFixed(4)}, {ride.destination.lng.toFixed(4)}</p>
+            </div>
+          )}
+          <div className="flex gap-2">
+            <Btn onClick={() => respond(true)}  disabled={resLoading} variant="success" data-testid="button-accept-ride">
+              {resLoading ? "…" : "✓ Accept"}
+            </Btn>
+            <Btn onClick={() => respond(false)} disabled={resLoading} variant="danger"  data-testid="button-reject-ride">
+              {resLoading ? "…" : "✗ Reject"}
+            </Btn>
+          </div>
+        </div>
+      )}
+
       {driverId && (
-        <Card title="Monitor Ride">
+        <Card title="Ride Monitor">
           <div className="flex gap-2 mb-3">
             <div className="flex-1">
-              <Label>Ride ID {sharedRideId && rideIdInput === sharedRideId && <span className="text-green-600 normal-case font-normal">(auto-filled)</span>}</Label>
-              <Input value={rideIdInput} onChange={setRideIdInput} placeholder="Enter ride_id to monitor" data-testid="input-ride-id" />
+              <Label>
+                Ride ID{" "}
+                {sharedRideId && rideIdInput === sharedRideId
+                  ? <span className="text-green-600 normal-case font-normal">(auto-filled · polling every 1s)</span>
+                  : null}
+              </Label>
+              <Input value={rideIdInput} onChange={v => { setRideIdInput(v); }} placeholder="Enter ride_id to monitor" data-testid="input-ride-id" />
             </div>
             <div className="flex items-end">
-              <Btn onClick={startPolling} variant="secondary" data-testid="button-start-polling">Poll</Btn>
+              <Btn onClick={() => startAutoPolling(rideIdInput.trim())} variant="secondary" data-testid="button-start-polling">Poll</Btn>
             </div>
           </div>
 
           {ride && (
-            <div className="space-y-2">
-              <div className="flex items-center gap-4">
-                <div><Label>Status</Label><StatusBadge status={ride.status} /></div>
-                {ride.driver_id && (
-                  <div><Label>Assigned Driver</Label><p className="text-xs font-mono truncate max-w-[120px]">{ride.driver_id}</p></div>
-                )}
-              </div>
-              {isOffer && (
-                <div className="rounded-lg bg-purple-50 border border-purple-200 p-3">
-                  <p className="text-sm font-semibold text-purple-800 mb-2">🚗 Ride offered to you!</p>
-                  <div className="flex gap-2">
-                    <Btn onClick={() => respond(true)}  disabled={resLoading} variant="success" data-testid="button-accept-ride">Accept</Btn>
-                    <Btn onClick={() => respond(false)} disabled={resLoading} variant="danger"  data-testid="button-reject-ride">Reject</Btn>
-                  </div>
+            <div className="flex items-center gap-4">
+              <div><Label>Status</Label><StatusBadge status={ride.status} /></div>
+              {ride.driver_id && (
+                <div><Label>Assigned Driver</Label>
+                  <p className="text-xs font-mono truncate max-w-[140px]">{ride.driver_id}</p>
                 </div>
               )}
             </div>
